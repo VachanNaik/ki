@@ -1,0 +1,317 @@
+/*----------------------------------------------------------------------------------------
+CDISC SAS Macro Module: adae_hr_ir.sas
+CDISC Algorithm Reference: ADAE_HR_IR
+------------------------------------------------------------------------------------------*/
+%macro adae_hr_ir;
+********************************************************************************;
+*SPECIFICATION 0 - 1) define footnote                                          *;
+********************************************************************************;
+%let pas=%nrbquote(Includes Studies: B7451006, B7451012, B7451013, B7451029, B7451036);
+%let py=%nrbquote(PY (Patient-Year): Total follow up time calculated up to the day of the first event for subjects with events, and up to the end of risk period for subjects without events.);
+%let rp=%str(Includes data up to the end of risk period (the smaller of [last dose date, death date] for B7451012/13/36 subjects who enrolled into the LTE study; or the smaller of [last dose date prior to Week 16 dose date/visit date, death date] for B7451029 subjects with available Week 16 dose date/visit date; otherwise, the smaller of [last dose date + 28 days, death date]).);
+%let ci=%str(Confidence intervals (CI) were calculated for incidence rates based on the assumption that the actual count of cases arises from a Poisson distribution for treatment groups with zero event; otherwise they were based on gamma distribution weighted by study-size.);
+%let abbrhr=%nrbquote(n: Number of subjects with the event. Incidence Rates: Number of subjects with events per 100 patient-years.);
+%let model=%nrbquote((*ESC*){super 1}Study-size adjusted results.);
+********************************************************************************;
+*SPECIFICATION 1 - 1) gen_cdisc_suminit                                        *;
+*                  2) null table when analysis dataset is empty                *;
+********************************************************************************;
+proc sql;
+	select count(*) into:num from &g_a_dsin
+	where &G_A_SUBSET;
+quit;
+
+%if &num.=0 %then
+	%do;
+		%let title4=%str( );
+		%let title5=%str( );
+	%end;
+%gen_cdisc_suminit %rptobs(chkdata=&g_a_dsin);
+
+%if &rptobs<=0 %then %return;
+********************************************************************************;
+*SPECIFICATION 2 - 1) minitial - initialize isam                               *;
+*                  2) mentry - setup bigN, treatment, by variables & subgroups *;
+*                  3) apply analysis subset                                    *;
+********************************************************************************;
+%minitial;
+%mentry(data=&g_a_dsin                           
+     , trtvar=&g_s_trtvar                
+     , trtfmt=v=&g_s_trttxt
+     , totalyn=&g_s_totalyn 
+     , totlabel=%nrbquote(&g_s_totlabel) , 
+	ndispyn=&g_s_ndispyn             
+     , subgrpvar=&g_s_subgrpvar 
+     , subgrplabel=&g_s_subgrplabel 
+     , subgrptotyn=&g_s_subgrptotyn      
+     , subgrptotlabel=&g_s_subgrptotlabel   
+     , nsubgrpdispyn=&g_s_nsubgrpdispyn
+     , byvar=&g_s_byvar
+     , patseq=usubjid);
+     
+data datrprot.&repbase._data1;
+  set _data1;
+run;
+
+proc sql;
+  select name into: byname1 separated by " " from dictionary.columns where libname="WORK" and memname="_DATA1" and name like "%BYVAR%";
+quit;
+proc sql;
+  select name into: byname2 separated by "," from dictionary.columns where libname="WORK" and memname="_DATA1" and name like "%BYVAR%";
+quit;
+********************************************************************************;
+*SPECIFICATION 3 - 1) N                                                        *;
+********************************************************************************;
+proc sql;
+	create table bign as select distinct _trt, %if %eval(&_byn)=1 %then %do; _byvar1, %end; 
+	count(distinct usubjid) as bign from _data1 
+	group by %if %eval(&_byn)=1 %then %do; _byvar1, %end; _trt
+	order by %if %eval(&_byn)=1 %then %do; _byvar1, %end; _trt
+	;
+run;
+
+data bign;
+	set bign;
+	_bign=strip(put(bign, 8.));
+run;
+
+%mstatrt(datain=bign
+		, stat=_bign
+   	, rowindnt=4
+   	, sparseyn=Y
+   	, where=
+   	, slabel=%nrbquote(N) 
+   	);
+
+data _base1;
+	set _base1;
+	if missing(bign) then
+		_cvalue='0';
+run;
+********************************************************************************;
+*SPECIFICATION 3 - 2) Number of Subjects with Event, n (%)                     *;
+********************************************************************************;
+data tae2;
+	set _data1;
+run;
+
+proc sort data=tae2;
+  by %if %eval(&_byn)>=1 %then %do; &byname1. %end; studyid _trt;
+run;
+
+proc univariate data=tae2(where=(_trt ne 4)) noprint;
+  by %if %eval(&_byn)>=1 %then %do; &byname1. %end; ;
+  var aval;
+  output out=ntotal n=ntotal sum=pdtotal;
+run;
+
+proc univariate data=tae2(where=(_trt ne 4)) noprint;
+  by %if %eval(&_byn)>=1 %then %do; &byname1. %end; studyid;
+  var aval;
+  output out=nsty n=nsty sum=pdsty;
+run; 
+
+proc univariate data=tae2 noprint;
+  by %if %eval(&_byn)>=1 %then %do; &byname1. %end; studyid _trt;
+  var aval;
+  output out=narm n=narm sum=pdarm;
+run; 
+
+ods output CrossTabFreqs=count;
+
+proc freq data=tae2;
+  by %if %eval(&_byn)>=1 %then %do; &byname1. %end; studyid;
+  tables cnsr*_trt/nopercent norow nocol;
+  run;
+
+ods output close;
+
+data nevt (keep=studyid %if %eval(&_byn)>=1 %then %do; &byname1. %end; _trt frequency rename=(frequency=nevt));  /*number of subjects with events in each arm in each study*/
+  set count;
+  where cnsr=0 and _trt is not missing;
+run;
+
+proc sort data=tae2;
+  by %if %eval(&_byn)>=1 %then %do; &byname1. %end; _trt;
+run;
+
+proc univariate data=tae2 noprint;
+  by %if %eval(&_byn)>=1 %then %do; &byname1. %end; _trt;
+  var aval;
+  output out=ntarm sum=pdtarm;
+run; 
+
+data rst;
+  merge narm nevt;
+  by %if %eval(&_byn)>=1 %then %do; &byname1. %end; studyid _trt;
+run;
+
+data rst2;
+  merge rst nsty;
+  by %if %eval(&_byn)>=1 %then %do; &byname1. %end; studyid;
+run;
+
+data rst3;
+%if %eval(&_byn)>=1 %then %do;
+  merge rst2 ntotal;
+  by  &byname1.;
+%end;
+%else %do;
+  set rst2;
+  if _n_=1 then set ntotal;
+%end;
+  if nevt=. then nevt=0;
+run;
+
+data prop;
+  set rst3;
+  weight=nsty/ntotal;
+  if nevt=. then nevt=0;
+  pcti=nevt/narm*100;
+  wpcti=pcti*weight;  /*weighted proportion (%) for each arm in each study*/
+run;
+
+proc sort data=prop;
+  by %if %eval(&_byn)>=1 %then %do; &byname1. %end; _trt;
+run;
+
+proc univariate data=prop noprint;
+  by %if %eval(&_byn)>=1 %then %do; &byname1. %end; _trt;
+  var wpcti;
+  output out=adjpct sum=adjpct;  /*adjprop: study size adjusted proportion (%) for each arm*/
+run;
+
+proc sql;
+  create table pevt as select distinct _trt,
+  %if %eval(&_byn)>=1 %then %do; &byname2., %end; 
+  sum(nevt) as count from nevt
+  group by  %if %eval(&_byn)>=1 %then %do; &byname1., %end; _trt
+;
+quit;
+
+data part2;
+  length np $ 30;
+  merge adjpct pevt;
+  by  %if %eval(&_byn)>=1 %then %do; &byname1. %end; _trt;
+  if missing(count) then count=0;
+  c_adjpct=strip(put(round(adjpct,0.1),8.1));
+  if strip(c_adjpct)='0.0' then c_adjpct='<0.1';
+  if count ne 0 then np=strip(count)||" ("||strip(c_adjpct)||")";
+  else np=strip(count);
+  proc sort;
+  by %if %eval(&_byn)>=1 %then %do; &byname1. %end; _trt;
+run;
+
+%mstatrt(datain=part2
+         ,slabel=%nrbquote(~{NBSPACE 4}Number of Subjects with Event, n (%~{super 1}))
+         ,rowindnt=0
+         ,stat=np
+         ,sparseyn=n
+         ,where=
+         ,joinyn=y
+         );
+********************************************************************************;
+*SPECIFICATION 3 - 3) Total Drug Exposure (PY)                                 *;
+********************************************************************************;
+data _data1;
+	set _data1;
+	py=aval/365.25;
+run;
+
+proc sql;
+	create table py_sum as select *, sum(py) as py_sum from _data1 group by _trt 
+		%if %eval(&_byn)=1 %then
+			%do;
+			, _byvar1;
+		%end;
+	;
+quit;
+
+data py_sum;
+	set py_sum;
+	_py_sum=put(round(py_sum, 0.01), 8.2);
+run;
+
+%mstatrt(datain=py_sum
+   	,slabel=%nrbquote(Total Drug Exposure (PY)) 
+   	,rowindnt=4
+   	,stat=_py_sum
+   	,sparseyn=n
+   	,where=
+   	,joinyn=y
+   	);
+********************************************************************************;
+*SPECIFICATION 3 - 4) Incidence Rates (95% CI)                                 *;
+********************************************************************************;
+data ir;
+  set rst3;
+  weight=pdsty/pdtotal;
+  iri=nevt/(pdarm/365.25)*100;; /*IR: n per 100 PY for each arm in each study*/
+  wiri=iri*weight;  
+  vari=nevt*( ((weight/(pdarm/365.25))*100) **2 );  /*variance for each arm in each study*/
+  weighti=weight/(pdarm/365.25)*100;
+run;
+
+proc sort data=ir;
+  by  %if %eval(&_byn)>=1 %then %do; &byname1. %end; _trt;
+run;
+
+proc univariate data=ir noprint;
+  by  %if %eval(&_byn)>=1 %then %do; &byname1. %end; _trt;
+  var wiri vari;
+  output out=adjir sum=adjir var;  
+run;
+
+proc univariate data=ir noprint;
+  by  %if %eval(&_byn)>=1 %then %do; &byname1. %end; _trt;
+  var weighti;
+  output out=maxwt max=maxwt;  /*maximum weighti*/
+run;
+
+data part4;
+  length cvalue $ 30;
+  merge maxwt adjir ntarm;
+  by  %if %eval(&_byn)>=1 %then %do; &byname1. %end; _trt;
+  if adjir=0 then do; lower=0;
+                      cstat=cinv(1-(0.05/2), 2); 
+                      upper=0.5*cstat*100/(pdtarm/365.25); 
+	              end;  
+  if adjir>0 then do; lower=(var/(2*adjir))*cinv(0.025,2*(adjir**2)/var);        
+                      upper=((var+maxwt**2)/(2*(adjir+maxwt)))*cinv(0.975,2*(adjir+maxwt)**2/(var+maxwt**2)); 
+                  end;
+  cvalue=strip(put(round(adjir, .01), 8.2))|| ' (' ||strip(put(round(lower, .01), 8.2)) || ", " ||strip(put(round(upper, .01), 8.2)) || ')';
+  proc sort;
+  by  %if %eval(&_byn)>=1 %then %do; &byname1. %end; _trt;
+run;
+
+%mstatrt(datain=part4
+    	,slabel=%nrbquote(~{NBSPACE 4}Incidence Rates (95% CI)(*ESC*){super 1})
+    	,rowindnt=0
+    	,stat=cvalue
+    	,sparseyn=n
+    	,where=
+    	,joinyn=y
+    	);
+********************************************************************************;
+*SPECIFICATION 4 - 1) titles and footnotes                                     *;
+*                  2) display                                                  *;
+********************************************************************************;
+%titles;
+%ftnote;
+%mdisplay(pageby=&g_d_pagebyn
+       ,byhead=%nrbquote(&g_d_byhead)
+       ,bylengths=&g_d_bylengths 
+       ,rowhead=%nrbquote(&g_d_rowhead)
+       ,rowlength=&g_d_rowlength
+       ,ods_rowjust=&g_d_ods_rowjust       
+       ,stathead=%nrbquote(&g_d_stathead)  
+	     ,statlength=&g_d_statlength
+       ,ods_statjust=&g_d_ods_statjust 
+       ,decalign=&g_d_decalign 
+       ,jumpline=&g_d_jumpline
+       ,proc_report=1
+       ,outfile=&outfile
+       ,outdata=datrprot.&repbase
+       );
+           
+%mend adae_hr_ir;

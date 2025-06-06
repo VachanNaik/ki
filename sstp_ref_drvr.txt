@@ -1,0 +1,45 @@
+/*-----------------------------------------------------------------------------
+PDS SAS Macro Module: adtte.sasdrvr
+PDS Algorithm Reference: adtte
+-------------------------------------------------------------------------------
+
+Purpose: 
+      Make global settings needed by macro and then call it.  
+
+Assumptions: 
+      -none-
+
+Called by:
+ 
+Calls to: 
+      bds_adam.sas -  Builds BDS ADaM dataset.
+      lib_temp.sas -  To convert system variables to sas macro variables.
+
+Other Inputs: 
+        
+ 
+Other Outputs:
+       
+
+Usage notes:
+      -none-
+
+-------------------------------------------------------------------------------
+History
+-------------------------------------------------------------------------------
+Revision 1.1 Yagnas UIMS 93263 CR 93284 : Initial Creation.
+Revision     YAGNAS  01Jul2016 UIMS 113080 CR 113132: Updates related to
+                               unplanned record partial time imputation.
+-----------------------------------------------------------------------------*/
+
+************************************************************************;
+* SPECIFICATION 1                                                      *;
+* Generate adtte ADaM Dataset                                           *;  
+************************************************************************;
+
+
+ %include temp;
+ %let g_ods_style=newstd;
+ %adae_hr_ir;
+
+
