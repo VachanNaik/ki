@@ -1,0 +1,92 @@
+/*-----------------------------------------------------------------------------
+PDS SAS Macro Module: adtte.sasdrvr
+PDS Algorithm Reference: adtte
+-------------------------------------------------------------------------------
+
+Purpose: 
+    Make global settings needed by macro and then call it.  
+
+Assumptions: 
+    -none-
+
+Called by:
+
+Calls to: 
+    bds_adam.sas -  Builds BDS ADaM dataset.
+    lib_temp.sas -  To convert system variables to sas macro variables.
+
+Other Inputs: 
+      
+
+Other Outputs:
+     
+
+Usage notes:
+    -none-
+
+-------------------------------------------------------------------------------
+History
+-------------------------------------------------------------------------------
+Revision 1.1 Yagnas UIMS 93263 CR 93284 : Initial Creation.
+Revision     YAGNAS  01Jul2016 UIMS 113080 CR 113132: Updates related to
+                             unplanned record partial time imputation.
+-----------------------------------------------------------------------------*/
+
+************************************************************************;
+* SPECIFICATION 1                                                      *;
+* Generate adtte ADaM Dataset                                           *;  
+************************************************************************;
+
+
+%include temp;
+
+data crit;
+paramn=_n_+1000;
+input  param & $200.;
+datalines;
+All AEs
+Serious Adverse Events
+Severe AEs
+TEAE Resulting in Permanent Discontinuation
+Discontinued Study Drug Due to AE and Continue Study
+Dose Reduced or Temporary Discontinuation Due to Adverse Events
+;
+run;
+
+proc sort data=datvprot.adtteae out=trt(keep=trtan trta) nodupkey;
+by trtan;
+run;
+
+proc sql;
+create table mock as select a.*,b.* from crit a,trt b;
+quit;
+
+proc sort data=mock;
+by trtan param;
+run;
+
+data g_dsin(drop=paramn);
+length param $200.;
+set datvprot.adtteae;
+PARAM=tranwrd (param,"Time to ","");
+PARAM=strip(tranwrd (param,"(Days)",""));
+proc sort;
+by trtan param;
+run;
+
+data final;
+merge mock(in=a) g_dsin;
+by trtan param;
+if a ;
+if paramn=1001 then param="Subjects with adverse events";
+if paramn=1002 then param="Subjects with serious adverse events";
+if paramn=1003 then param="Subjects with severe adverse events";	
+if paramn=1004 then param="Subjects discontinued from study due to adverse events [1]";	
+if paramn=1005 then param="Subjects discontinued study drug due to AE and continue study [2]";	
+if paramn=1006 then param="Subjects with dose reduced or temporary discontinuation due to adverse events";
+run;
+
+%let G_A_DSIN=final;
+%let g_ods_style=newstd; 
+
+%adae_irall_s010;

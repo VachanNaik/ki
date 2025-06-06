@@ -1,0 +1,291 @@
+/*----------------------------------------------------------------------------------------
+CDISC SAS Macro Module: adae_hr_ir.sas
+CDISC Algorithm Reference: ADAE_HR_IR
+------------------------------------------------------------------------------------------*/
+%macro adae_irall_s010;
+********************************************************************************;
+*SPECIFICATION 0 - 1) define footnote                                          *;
+********************************************************************************;
+%let pas=%nrbquote(Includes Studies: B7451006, B7451012, B7451013, B7451029, B7451036);
+%let py=%nrbquote(PY (Patient-Year): Total follow up time calculated up to the day of the first event for subjects with events, and up to the end of risk period for subjects without events.);
+%let riskp=%nrstr(Includes data up to the end of risk period (the smaller of [last dose date, death date] for B7451012/13/36 subjects who enrolled into the LTE study; or the smaller of [last dose date prior to Week 16 dose date/visit date, death date] for B7451029 subjects with available Week 16 dose date/visit date; otherwise, the smaller of [last dose date + 28 days, death date]).);
+%let ci=%str(Confidence intervals (CI) were calculated for incidence rates based on the assumption that the actual count of cases arises from a Poisson distribution for treatment groups with zero event; otherwise they were based on gamma distribution weighted by study-size.);
+%let abbrhr=%nrbquote(n: Number of subjects with the event. Incidence Rates: Number of subjects with events per 100 patient-years.);
+%let model=%nrbquote((*ESC*){super 1}Study-size adjusted results.);
+********************************************************************************;
+*SPECIFICATION 1 - 1) gen_cdisc_suminit                                        *;
+*                  2) null table when analysis dataset is empty                *;
+********************************************************************************;
+%gen_cdisc_suminit;
+%rptobs(chkdata=&g_a_dsin);
+
+%if &rptobs<=0 %then %return;
+********************************************************************************;
+*SPECIFICATION 2 - 1) minitial - initialize isam                               *;
+*                  2) mentry - setup bigN, treatment, by variables & subgroups *;
+*                  3) apply analysis subset                                    *;
+********************************************************************************;
+data datrprot.&repbase._&g_a_dsin;
+  set &g_a_dsin;
+run;
+
+data mock;
+	set &g_a_dsin;
+  keep newtrt newtrtn param paramn;
+  proc sort nodupkey;
+  by newtrtn paramn;
+run;
+
+proc sql;
+create table part1 as select distinct newtrtn,  count(distinct 
+	usubjid) as bign from  &g_a_dsin(where=(not missing(usubjid))) group by newtrtn;
+run;
+
+data mock1;
+  merge mock part1;
+by newtrtn ;
+run;
+********************************************************************************;
+*SPECIFICATION 3 - 2) Number of Subjects with Event, n (%)                     *;
+********************************************************************************;
+data tae2;
+	set &g_a_dsin;
+run;
+
+proc sort data=tae2;
+by paramn studyid newtrtn  ;
+run;
+
+proc univariate data=tae2(where=(newtrtn ne 4)) noprint;
+by paramn;
+  var aval;
+  output out=ntotal n=ntotal sum=pdtotal;
+run;
+
+proc univariate data=tae2(where=(newtrtn ne 4)) noprint;
+by paramn studyid;
+  var aval;
+  output out=nsty n=nsty sum=pdsty;
+run; 
+
+proc univariate data=tae2 noprint;
+by paramn studyid newtrtn;
+  var aval;
+  output out=narm n=narm sum=pdarm;
+run; 
+
+ods output CrossTabFreqs=count;
+
+proc freq data=tae2;
+by paramn studyid;
+  tables cnsr*newtrtn/nopercent norow nocol;
+  run;
+
+ods output close;
+
+data nevt (keep= paramn studyid newtrtn frequency rename=(frequency=nevt));  /*number of subjects with events in each arm in each study*/
+  set count;
+  where cnsr=0 and newtrtn is not missing;
+run;
+
+proc sort data=tae2;
+by paramn newtrtn;
+run;
+
+proc univariate data=tae2 noprint;
+by paramn newtrtn;
+  var aval;
+  output out=ntarm sum=pdtarm;
+run; 
+
+data rst;
+  merge narm nevt;
+by paramn studyid newtrtn;
+run;
+
+data rst2;
+  merge rst nsty;
+by paramn studyid;
+run;
+
+data rst3;
+  merge rst2 ntotal;
+  by paramn;
+  if nevt=. then nevt=0;
+run;
+
+data prop;
+  set rst3;
+  weight=nsty/ntotal;
+  pcti=nevt/narm*100;
+  wpcti=pcti*weight;  /*weighted proportion (%) for each arm in each study*/
+run;
+
+proc sort data=prop;
+by paramn newtrtn;
+run;
+
+proc univariate data=prop noprint;
+by paramn newtrtn;
+  var wpcti;
+  output out=adjpct sum=adjpct;  /*adjprop: study size adjusted proportion (%) for each arm*/
+run;
+
+proc sql;
+create table pevt as select distinct newtrtn,paramn,sum(nevt) as count from nevt
+group by paramn, newtrtn
+;
+quit;
+
+data part2;
+  length np $ 30;
+  merge adjpct pevt;
+  by paramn newtrtn;
+  if missing(count) then count=0;
+  c_adjpct=strip(put(round(adjpct,0.1),8.1));
+  if strip(c_adjpct)='0.0' then c_adjpct='<0.1';
+  if count ne 0 then np=strip(count)||" ("||strip(c_adjpct)||")";
+  else np=strip(count);
+run;
+
+********************************************************************************;
+*SPECIFICATION 3 - 3) Total Drug Exposure (PY)                                 *;
+********************************************************************************;
+data  &g_a_dsin;
+	set  &g_a_dsin;
+	py=aval/365.25;
+run;
+
+proc sql;
+create table part3 as select newtrtn, paramn, sum(py) as py_sum 
+		from &g_a_dsin
+group by paramn, newtrtn;
+quit;
+********************************************************************************;
+*SPECIFICATION 3 - 4) Incidence Rates (95% CI)                                 *;
+********************************************************************************;
+data ir;
+  set rst3;
+  weight=pdsty/pdtotal;
+  iri=nevt/(pdarm/365.25)*100;; /*IR: n per 100 PY for each arm in each study*/
+  wiri=iri*weight;  
+  vari=nevt*( ((weight/(pdarm/365.25))*100) **2 );  /*variance for each arm in each study*/
+  weighti=weight/(pdarm/365.25)*100;
+run;
+
+proc sort data=ir;
+by paramn newtrtn ;
+run;
+
+proc univariate data=ir noprint;
+  by paramn newtrtn ;
+  var wiri vari;
+  output out=adjir sum=adjir var;  
+run;
+
+proc univariate data=ir noprint;
+  by paramn newtrtn ;
+  var weighti;
+  output out=maxwt max=maxwt;  /*maximum weighti*/
+run;
+
+data ci;
+  length cvalue $ 30;
+  merge maxwt adjir ntarm;
+  by paramn newtrtn ;
+  if adjir=0 then do; lower=0;
+                      cstat=cinv(1-(0.05/2), 2); 
+                      upper=0.5*cstat*100/(pdtarm/365.25); 
+	              end;  
+  if adjir>0 then do; lower=(var/(2*adjir))*cinv(0.025,2*(adjir**2)/var);        
+                      upper=((var+maxwt**2)/(2*(adjir+maxwt)))*cinv(0.975,2*(adjir+maxwt)**2/(var+maxwt**2)); 
+                  end;
+  cvalue=strip(put(round(adjir, .01), 8.2))|| ' (' ||strip(put(round(lower, .01), 8.2)) || ", " ||strip(put(round(upper, .01), 8.2)) || ')';
+  proc sort;
+  by paramn newtrtn ;
+run;
+
+data part4;
+merge part3(in=a) ci(in=b);
+by paramn newtrtn ;
+if a and b;
+	_py_sum=put(round(py_sum, 0.01), 8.2);
+	if missing(py_sum)  then
+		_py_sum="-";
+run;
+
+data part4;
+ merge part4(in=a) part2(in=b);
+  by paramn newtrtn ;
+  if a and b;
+run;  
+
+proc sort data=mock1; by paramn newtrtn; run;
+	
+data report;
+	merge mock1 part4;
+	by paramn newtrtn;
+	_newtrt=strip(newtrt)||"|("||"N="||strip(bign)||")";
+	_finalval=strip(np)||"~n"||strip(cvalue);
+	rowval="n (%(*ESC*){super 1})~nIR (95% CI)(*ESC*){super 1}";
+  if _py_sum="-" then do;
+  _finalval=strip(np);
+	rowval="n (%)";
+  end;
+	dummy=1;
+  proc sort;
+  by paramn newtrtn;
+run;
+
+/*newtrt format*/
+proc sort data=report out=trt nodupkey;
+  by newtrtn;
+run;
+/*newtrt format*/
+data trtfmt;
+set trt;
+fmtname="newtrtn";
+start=newtrtn;
+end=newtrtn;
+label=_newtrt;
+type="N";
+run;
+
+Proc Format Lib=Work CntlIn=trtfmt;
+Run;
+
+data datrprot.report;
+  set report;
+run;
+
+********************************************************************************;
+*SPECIFICATION 5 -  display                                                    *;
+********************************************************************************;
+%util_ods_startup;
+%titles;
+%ftnote; 
+
+%do _i=1 %to &ods_dest_count;
+*process ODS destinations;
+%let ods_dest = %upcase(%scan(&g_ods_dest_list, &_i, %str( )));
+%util_ods_open;
+options nonumber nodate nobyline;
+
+proc report data=report nowd list missing contents="" split='|';
+	column paramn param rowval newtrtn, (_finalval dummy);
+	define paramn/group order=internal noprint;
+	define param/group " " style(column)={just=left width=50mm} 
+		style(header)={just=left} ;
+	define rowval/group " " style(column)={just=left width=25mm} 
+		style(header)={just=left} ;
+       define newtrtn/across order=internal " " format=newtrtn.;
+	define _finalval/group " " style(column)={just=left width=38mm} 
+		style(header)={just=left} left nozero;
+	define dummy/sum noprint nozero;
+run;
+
+
+%util_ods_close;
+%end;
+%util_ods_cleanup;
+%mend adae_irall_s010;
