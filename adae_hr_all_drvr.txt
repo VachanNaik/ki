@@ -1,0 +1,123 @@
+*********************************************************************;
+
+
+%include temp;
+proc format;
+value sexn 1="Male" 2="Female";
+value basigan 1="Moderate" 2="Severe";
+value racegr1n 1="White" 2="Black" 3="Asian" 4="Other";
+value agegr1n 1="< 18" 2="18-< 65" 3="~{unicode 2265} 65" 4="~{unicode 2265} 75";
+value tempn 1="xxx";
+value SUBSYSN  1="Prior Systemic Therapy: Yes" 2="Prior Systemic Therapy: No";
+*vijays48: New format added 04-Feb-2025;
+value agegr5n 1="<18" 2=">=18" ;
+value smoke2n 1="Current/Former Smoker" 2="Never Smoker";
+value agegr6n 1="<18" 2="18-< 40" 3="40-< 50" 4="50-< 65" 5="65-< 75" 6="~{unicode 2265} 65" 7="~{unicode 2265} 75";
+value diabetesn 1="Yes" 2 ="No";
+
+run;
+
+data crit;
+paramn=_n_+1000;
+input  param & $200.;
+datalines;
+Hypoglycemia
+;
+run;
+
+
+
+%let subgroupn=&subgroup.n;
+data g_dsin;
+length param $200.;
+set datvprot.adtteae datvprot.adttelb;
+temp='';
+drop  &subgroup.;
+PARAM=tranwrd (param,"Time to ","");
+PARAM=strip(tranwrd (param,"(Days)",""));
+PARAM=tranwrd (param,"Events (CMQ)","Events");
+PARAM=tranwrd(param,"Permanent Discontinuation","Permanent Discontinuation from the Study");
+PARAM=tranwrd(param,"All Eczema Herpeticum","Eczema Herpeticum (CMQ)");
+%if %index(&subgroup.,agegr1) %then %do;
+output;
+if agegr2n=2 then do;
+agegr1n=4;
+output;
+end;
+%end;
+run;
+
+data g_dsin(drop=paramn);
+set g_dsin;
+tempn=1;
+&subgroup.=strip(put(&subgroupn., &subgroupn..)); /*thiyav03*/
+
+proc sort;
+where &subgroupn. ne . ;
+by &subgroupn. trtan param;
+run;
+
+proc sort data=g_dsin out=trt(keep=trtan trta) nodupkey;
+by trtan;
+run;
+
+proc sort data=g_dsin out=sub(keep=&subgroupn. &subgroup.) nodupkey;
+by &subgroupn.;
+run;
+
+proc sql;
+create table mock as select a.*,b.*,c.* from crit a,trt b,sub c;quit;
+
+proc sort data=mock;
+by &subgroupn. trtan param;
+run;
+
+proc sort data=g_dsin;
+by usubjid;
+run; 
+
+%global table_subset;
+
+data g_dsin;
+merge g_dsin datvprot.adsl(keep=usubjid country saffl subage1);
+by usubjid;
+%if %length(&g_adsl_subset) ne 0 %then %do;
+if &g_adsl_subset.;
+%end;
+%if %length(&table_subset.) ne 0 %then %do;
+if &table_subset.;
+%end;
+proc sort;
+by &subgroupn. trtan param;
+run;
+
+
+
+data final;
+merge mock(in=a) g_dsin;
+by &subgroupn. trtan param;
+if a;
+
+if paramn not in (1001 1002 1003 1004 1005 1006 1014 1018 1023 1024 1025 1026 1027 1028 1029 1030 1031) then param="~{nbspace 4}"||strip(param); 
+if paramn in (1020 1021) then param=strip(param)||" [1]";
+if paramn in (1021 1022) then param="~{nbspace 4}"||strip(param);
+if paramn=1023 then param="Thrombocytopenia (Confirmed Platelet Counts (10^3/mm^3) < 75)";
+if paramn=1024 then param="Thrombocytopenia (Confirmed Platelet Counts (10^3/mm^3) < 50)";
+if paramn=1026 then param="Creatine Phosphokinase Increased (Creatine Kinase (U/L) > 5 x ULN)";
+if paramn=1025 then param="Lymphopenia (confirmed <0.5 10^3/mm^3)";
+
+run;
+
+
+data datrprot.irall_check;
+set final;
+run;
+
+
+
+
+
+
+%let G_A_DSIN=final;
+%let g_ods_style=newstd;
+%adae_hr_all;

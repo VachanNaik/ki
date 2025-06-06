@@ -1,0 +1,232 @@
+/*----------------------------------------------------------------------------------------
+CDISC SAS Macro Module: adae_hr_ir.sas
+CDISC Algorithm Reference: ADAE_HR_IR
+------------------------------------------------------------------------------------------*/
+%let ci=%nrbquote(Confidence intervals (CI) were calculated for incidence rates based on the assumption that the actual count of cases arises from a Poisson distribution.);
+%macro adae_hr_all;
+********************************************************************************;
+*SPECIFICATION 0 - 1) define footnote                                          *;
+********************************************************************************;
+%let pas=%nrbquote(Includes Studies: B7451006, B7451012, B7451013, B7451029);
+%let py=%nrbquote(PY (Patient-Year): Total follow up time calculated up to the day of the first event for subjects with events, and up to the end of risk period for subjects without events.);
+%let n=%nrbquote(n: Number of subjects with the event. Events are counted up to 28 days beyond the last dose or to the data cutoff date.);
+%let riskp=%str(Includes data up to the end of risk period (the smallest of [last dose date + 28 days], [death date] and [data cut date for B7451015]).);
+%let abbrhr=%nrbquote(n: Number of subjects with the event. Incidence Rates (IR): Number of subjects with events per 100 patient-years.);
+
+%let abbralc=%nrbquote(ALC: Absolute Lymphocyte Count. Incidence Rates: Number of subjects with events per 100 patient-years. );
+%let abbranc=%nrbquote(ANC: Absolute Neutrophil Count. Incidence Rates: Number of subjects with events per 100 patient-years. );
+
+%let model=%nrbquote(HR and its associated CI were estimated from a Cox regression model including fixed effects of treatment and study for comparisons.);
+%let neu=%nrbquote(Two consecutive post-baseline lab values in the same category are required for confirmation. Events are counted in the most recent category prior to occurrence. A subject may appear in multiple categories.
+);
+%let ne=%nrbquote(NE: Not estimable, 0 events in both treatment groups of the comparison. );
+%let nc=%nrbquote(NC: Not calculated, 0 events in one treatment group of the comparison. );
+********************************************************************************;
+*SPECIFICATION 1 - 1) gen_cdisc_suminit                                        *;
+*                  2) null table when analysis dataset is empty                *;
+********************************************************************************;
+%gen_cdisc_suminit %rptobs(chkdata=&g_a_dsin);
+
+%if &rptobs<=0 %then
+%return;
+********************************************************************************;
+*SPECIFICATION 2 - 1) minitial - initialize isam                               *;
+*                  2) mentry - setup bigN, treatment, by variables & subgroups *;
+*                  3) apply analysis subset                                    *;
+********************************************************************************;
+
+data mock;
+set &g_a_dsin;
+keep &subgroupn. &subgroup. newtrt newtrtn param paramn;
+proc sort nodupkey;
+by &subgroupn. newtrtn paramn;
+run;
+
+proc sql;
+create table part1 as select distinct &subgroupn.,newtrtn,  count(distinct 
+usubjid) as bign from  &g_a_dsin(where=(not missing(usubjid))) group by &subgroupn.,newtrtn;
+run;
+data mock1;
+merge mock part1;
+by &subgroupn. newtrtn ;
+run;
+********************************************************************************;
+*SPECIFICATION 3 - 2) Number of Subjects with Event, n (%)                     *;
+********************************************************************************;
+********************************************************************************;
+*SPECIFICATION 3 - 2) Number of Subjects with Event, n (%)                     *;
+********************************************************************************;
+
+proc sql;
+create table part2 as select distinct &subgroupn.,newtrtn, paramn, count(distinct usubjid) as count from g_a_dsin group by &subgroupn.,newtrtn, paramn, cnsr having cnsr=0 order by &subgroupn.,newtrtn, paramn;
+quit;
+data part2_1;
+merge mock1 part2(in=a);
+by &subgroupn. newtrtn paramn;
+
+/* 	if a; */
+
+
+proc sort;
+by &subgroupn. newtrtn paramn;
+run;
+
+data part2_1;
+length pct $10;
+set  part2_1;
+if missing(count) then count=0;
+pct=put(round(count/bign*100, 0.1), 8.1);
+if strip(pct)='0.0'  then pct='<0.1';
+if count ne 0 then
+_np=strip(count)||" ("||strip(pct)||")";
+else _np=strip(count);
+run;
+********************************************************************************;
+*SPECIFICATION 3 - 3) Total Drug Exposure (PY)                                 *;
+********************************************************************************;
+     data  &g_a_dsin;
+      set  &g_a_dsin;
+py=aval/365.25;
+run;
+proc sql;
+create table part3 as select &subgroupn.,newtrtn, paramn, sum(py) as py_sum 
+from &g_a_dsin
+group by &subgroupn.,newtrtn, paramn;
+quit;
+********************************************************************************;
+*SPECIFICATION 3 - 4) Incidence Rates (95% CI)                                 *;
+********************************************************************************;
+
+data part4;
+merge part2_1 part3;
+by &subgroupn. newtrtn paramn;
+_py_sum=put(round(py_sum, 0.01), 8.2);
+if missing(py_sum) then _py_sum="-";
+
+proc sort;
+by &subgroupn. newtrtn paramn;
+run;
+
+data part4_1;
+set part4;
+ir=count/(py_sum/100);
+
+if count=0 then
+lowIR=0;
+else
+lowIR=0.5*QUANTILE('chisquare', .025, 2*count)/(py_sum/100);
+upIR=0.5*QUANTILE('chisquare', .975, 2*(count+1))/(py_sum/100);
+cvalue=strip(put(round(IR, .01), 8.2))|| ' (' ||strip(put(round(lowIR, .01), 
+8.2)) || ", " ||strip(put(round(upIR, .01), 8.2)) || ')';
+if missing(ir) then cvalue="-";
+proc sort;
+by &subgroupn. newtrtn paramn;
+run;
+%if %index(&REPBASE.,china) %then %do;
+proc sql noprint;
+select distinct paramn into: nullpara separated by " "  from part4_1
+group by paramn
+having sum(count)=0;
+quit;
+
+%end;
+%else %do;
+%let nullpara=9999;
+%end;
+
+
+
+data report ;
+merge mock(in=a) part4_1;
+by &subgroupn. newtrtn paramn;
+if a;
+_newtrt=strip(newtrt)||"|("||"N="||strip(bign)||")";
+dummy=1;
+rowval="n(%)~nPY~nIR (95% CI)";
+finalval=strip(_np)||"~n"||strip(_py_sum)||"~n"||strip(cvalue);
+
+if paramn in (1006 1014 1018) then
+do;
+
+   if paramn=1006 then
+   param="Infections";
+   rowval='';finalval='';
+
+   if paramn=1014 then
+   param="Malignancies";
+   rowval='';finalval='';
+
+   if paramn=1018 then
+   param="Cardiovascular Events";
+   rowval='';finalval='';
+end;
+
+_bign=&subgroupn. *1000+newtrtn*10;
+ 
+ %if &repbase=adae_hr_all_age %then %do;
+ &subgroup.=strip(put(agegr6n,agegr6n.));
+ %end;
+run;
+
+proc sort;
+by &subgroupn. &subgroup.;
+run;
+
+proc sort data=report out=trt nodupkey;
+by _bign;
+run;
+/*newtrt format*/
+data trtfmt;
+set trt;
+fmtname="newtrtn";
+start=_bign;
+end=_bign;
+label=_newtrt;
+type="N";
+run;
+
+Proc Format Lib=Work CntlIn=trtfmt;
+Run;
+
+/*vijays48 4-Feb-2025: added code for outputing final dataset*/
+data datrprot.&repbase;
+set report;
+run;
+proc sort data=report;
+by &subgroupn. &subgroup.;
+run;
+
+********************************************************************************;
+*SPECIFICATION 5 -  display                                                    *;
+********************************************************************************;
+%util_ods_startup;
+%titles;
+%ftnote;
+%let _trtn=3;
+
+
+%do _i=1 %to &ods_dest_count;
+*process ODS destinations;
+%let ods_dest = %upcase(%scan(&g_ods_dest_list, &_i, %str( )));
+%util_ods_open;
+options nonumber nodate nobyline;
+
+proc report data=report nowd list missing contents="" split='|' spanrows style(header)={vjust=bottom just=center };
+column paramn param rowval _bign, (finalval dummy);
+by &subgroupn. &subgroup.;
+define paramn/group order=internal noprint;
+define param/group "Safety Event" style(column)={ just=left width=90mm} 
+style(header)={vjust=bottom just=left } left id;
+define rowval/group " " style(column)={ just=left width=20mm};
+define _bign/across order=internal " " format=newtrtn.;
+define finalval/group " " style(column)={ just=left width=38mm} 
+style(header)={vjust=bottom just=left } left;
+define dummy/sum noprint nozero;
+run;
+
+%util_ods_close;
+%end;
+%util_ods_cleanup;
+%mend adae_hr_all;
+
+
